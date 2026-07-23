@@ -164,7 +164,7 @@ class FlowPanel {
 
 		const sync = () => {
 			const mobile =
-				window.matchMedia("(pointer: coarse)").matches || window.innerWidth <= 768;
+				window.matchMedia("(any-pointer: coarse)").matches || window.innerWidth <= 768;
 			this.mobileTrigger.style.display = mobile && !this.visible ? "block" : "none";
 		};
 		this._syncMobileTrigger = sync;
