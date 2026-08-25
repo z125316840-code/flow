@@ -2,6 +2,7 @@ import { createApp, watch } from "vue";
 import App from "@/App.vue";
 import { useStore } from "@/store";
 import { readPanelState, writePanelState } from "@/lib/panelState";
+import { installFlowZhLocalization } from "@/lib/zhLocalization";
 import "@/index.css";
 
 const PANEL_WIDTH = 420;
@@ -212,6 +213,7 @@ class FlowPanel {
 
 frappe.provide("frappe.flow");
 $(document).on("app_ready", () => {
+	installFlowZhLocalization();
 	// Presentation only: the server enforces the Flow User role on every public endpoint.
 	if (frappe.boot?.flow_enabled === false) return;
 	frappe.flow.panel = new FlowPanel();

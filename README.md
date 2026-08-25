@@ -53,6 +53,14 @@ before reinstalling Flow's requirements:
 
 Fresh installations select the compatibility wheel automatically.
 
+### Chinese localization
+
+The `version-16` branch includes the Flow-specific Simplified Chinese catalog used by the
+maintained ERPNext deployment. Set the Frappe user or system language to Chinese (`zh`) to
+enable it. A route-scoped client fallback covers dynamic Desk list labels without changing
+non-Flow pages. During migration, the nine older site-local `ERP Flow Zh` Client Scripts are
+disabled because the bundled implementation replaces them.
+
 ## Quick Access
 
 You can open the global AI chat interface from anywhere in the Frappe Desk by pressing:
