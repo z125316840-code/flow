@@ -25,10 +25,7 @@ class TestDisableLegacyFlowZhClientScripts(TestCase):
 		)
 		self.assertEqual(
 			frappe.db.set_value.call_args_list,
-			[
-				call("Client Script", name, "enabled", 0, update_modified=False)
-				for name in enabled
-			],
+			[call("Client Script", name, "enabled", 0, update_modified=False) for name in enabled],
 		)
 
 	def test_no_matching_scripts_is_a_no_op(self):

@@ -409,6 +409,7 @@ class TestBuildPromptMessages(IntegrationTestCase):
 
 		self.assertEqual(resumed_prompt_tool["name"], "lookup")
 
+
 class TestIndexRetrievalAttachments(IntegrationTestCase):
 	def setUp(self):
 		frappe.db.set_single_value("Flow Knowledge Settings", "chunk_size", 200)
