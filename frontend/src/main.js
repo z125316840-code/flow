@@ -142,7 +142,7 @@ class FlowPanel {
 		this.mobileTrigger.type = "button";
 		this.mobileTrigger.setAttribute("aria-label", __("Open Flow assistant"));
 		this.mobileTrigger.title = __("Open Flow assistant");
-		this.mobileTrigger.textContent = "Flow";
+		this.mobileTrigger.textContent = "AI";
 		Object.assign(this.mobileTrigger.style, {
 			position: "fixed",
 			right: "16px",
