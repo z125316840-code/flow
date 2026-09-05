@@ -89,6 +89,14 @@ class TestRead(IntegrationTestCase):
 		rows = read(doctype="ToDo", filters={"description": "fields probe"}, fields=["name", "description"])
 		self.assertEqual(rows[0]["description"], "fields probe")
 
+	def test_permission_denied_raises(self):
+		frappe.set_user("Guest")
+		try:
+			with self.assertRaises(PermissionError):
+				read(doctype="User")
+		finally:
+			frappe.set_user("Administrator")
+
 
 class TestExecute(IntegrationTestCase):
 	@classmethod
@@ -175,12 +183,10 @@ class TestUpdate(IntegrationTestCase):
 		self.assertEqual(result["updated"], [])
 		self.assertEqual(result["failures"][0]["name"], "does-not-exist")
 
-	def test_permission_denied_reported_as_failure(self):
+	def test_permission_denied_raises(self):
 		frappe.set_user("Guest")
-		result = update(doctype="ToDo", names=[self.todo.name], values={"status": "Closed"})
-
-		self.assertEqual(result["updated"], [])
-		self.assertEqual(len(result["failures"]), 1)
+		with self.assertRaises(frappe.PermissionError):
+			update(doctype="ToDo", names=[self.todo.name], values={"status": "Closed"})
 
 
 class TestDelete(IntegrationTestCase):
@@ -206,12 +212,10 @@ class TestDelete(IntegrationTestCase):
 		self.assertEqual(result["deleted"], [])
 		self.assertEqual(result["failures"][0]["name"], "does-not-exist")
 
-	def test_permission_denied_reported_as_failure(self):
+	def test_permission_denied_raises(self):
 		frappe.set_user("Guest")
-		result = delete(doctype="ToDo", names=[self.todo.name])
-
-		self.assertEqual(result["deleted"], [])
-		self.assertEqual(len(result["failures"]), 1)
+		with self.assertRaises(frappe.PermissionError):
+			delete(doctype="ToDo", names=[self.todo.name])
 
 
 class TestSyncBuiltinTools(IntegrationTestCase):

@@ -102,6 +102,7 @@
 "Full screen","全屏",""
 "Good response","回复很好",""
 "Hybrid fuses vector similarity with keyword matching. Vector uses similarity alone.","混合检索会融合向量相似度与关键词匹配；向量检索仅使用相似度。",""
+"I could not complete this task because your current Frappe/ERPNext user does not have the required permission. The task has been stopped, and no alternative route was attempted. Ask an administrator for access or hand the task to an authorized user.","当前 Frappe/ERPNext 用户缺少执行此任务所需的权限，因此任务已停止，且未尝试任何替代路径。请联系管理员申请权限，或将任务交给有权限的用户处理。",""
 "Import Path","导入路径",""
 "Indexing","索引状态",""
 "Input → Output","输入 → 输出",""

@@ -8,6 +8,7 @@ from collections.abc import Generator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import frappe
 from frappe import _
 
 from flow.lib.model import ChatResponse, Model, ToolCall, ToolCallBegin
@@ -19,6 +20,18 @@ if TYPE_CHECKING:
 DEFAULT_MAX_ITERATIONS = 20
 ERROR_MESSAGE_LIMIT = 500
 VALID_ROLES = frozenset({"system", "user", "assistant", "tool"})
+PERMISSION_POLICY_MARKER = "[flow_permission_boundary_v1]"
+PERMISSION_POLICY = f"""Permission boundary (highest priority): use only the current Frappe/ERPNext user's permissions.
+If any tool reports that permission is denied, stop the task immediately. Do not retry, switch tools, alter filters,
+use execute/code/SQL/raw APIs, assume another identity, or otherwise seek the same data or action through an alternate route.
+Do not infer or disclose denied data. Tell the user that the task stopped because permission is missing, and suggest
+requesting access or handing the work to an authorized user.
+{PERMISSION_POLICY_MARKER}"""
+PERMISSION_DENIED_OUTPUT = (
+	"I could not complete this task because your current Frappe/ERPNext user does not have the required "
+	"permission. The task has been stopped, and no alternative route was attempted. Ask an administrator "
+	"for access or hand the task to an authorized user."
+)
 
 
 @dataclass
@@ -47,6 +60,13 @@ class RunResult:
 	usage: dict[str, int] = field(default_factory=dict)
 	paused: bool = False
 	questions: list[Question] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ToolPermissionDenied:
+	"""A permission exception normalized into a terminal agent outcome."""
+
+	message: str
 
 
 @dataclass
@@ -105,7 +125,7 @@ class Agent:
 		self.auto_approve = auto_approve
 		self.name = name
 		self.model = Model(model) if isinstance(model, str) else model
-		self.instructions = instructions
+		self.instructions = with_permission_policy(instructions)
 		self.tools = list(tools or [])
 		if knowledge:
 			from flow.tools.builtins import bind_search_knowledge
@@ -143,7 +163,9 @@ class Agent:
 		"""
 		if stream:
 			return self._resume_stream(messages, answers)
-		messages, _ = self._prepare_resume(messages, answers)
+		messages, _, permission_denied = self._prepare_resume(messages, answers)
+		if permission_denied:
+			return self._permission_denied_result(messages, iterations=0)
 		if _has_denial(answers):
 			return self._stopped_result(messages)
 		return self._loop(messages, self._answered_calls(messages))
@@ -152,9 +174,12 @@ class Agent:
 		"""Stream a resume: first replay the just-resolved tool results so the UI can fill in
 		the tool cards that were awaiting an answer, then continue the agent loop (or stop
 		if the user denied)."""
-		messages, resolved = self._prepare_resume(messages, answers)
+		messages, resolved, permission_denied = self._prepare_resume(messages, answers)
 		for call, content in resolved:
 			yield ToolEnded(id=call.id, name=call.name, result=content)
+		if permission_denied:
+			yield Done(result=self._permission_denied_result(messages, iterations=0))
+			return
 		if _has_denial(answers):
 			yield Done(result=self._stopped_result(messages))
 			return
@@ -168,6 +193,26 @@ class Agent:
 			messages=messages,
 			tool_calls=self._answered_calls(messages),
 			iterations=0,
+		)
+
+	def _permission_denied_result(
+		self,
+		messages: list[dict[str, Any]],
+		*,
+		iterations: int,
+		usage: dict[str, int] | None = None,
+		executed_calls: list[ToolCall] | None = None,
+	) -> RunResult:
+		"""End immediately with deterministic copy; the model must not author a workaround."""
+		output = _(PERMISSION_DENIED_OUTPUT)
+		if not messages or messages[-1].get("role") != "assistant" or messages[-1].get("content") != output:
+			messages.append({"role": "assistant", "content": output})
+		return RunResult(
+			output=output,
+			messages=messages,
+			tool_calls=executed_calls if executed_calls is not None else self._answered_calls(messages),
+			iterations=iterations,
+			usage=usage or {},
 		)
 
 	def new_session(self, *, title: str | None = None) -> Any:
@@ -188,28 +233,40 @@ class Agent:
 
 	def _prepare_resume(
 		self, messages: list[dict[str, Any]], answers: dict[str, Any]
-	) -> tuple[list[dict[str, Any]], list[tuple[ToolCall, str]]]:
+	) -> tuple[list[dict[str, Any]], list[tuple[ToolCall, str]], bool]:
 		"""Append a tool result for each pending call. Returns the new messages plus the
-		(call, content) pairs resolved, so a streaming resume can replay them as events."""
-		_validate_messages(messages)
-		messages = list(messages)
+		(call, content) pairs resolved, so a streaming resume can replay them as events.
+		A permission failure skips every remaining pending call."""
+		messages = self._build_initial_messages(messages)
 		pending = self._pending_calls(messages)
 		if not pending:
 			raise ValueError("No questions awaiting an answer in the provided messages")
 
 		resolved: list[tuple[ToolCall, str]] = []
+		permission_denied = False
 		for call in pending:
+			if permission_denied:
+				content = _permission_skipped_result()
+				messages.append(
+					{"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
+				)
+				resolved.append((call, content))
+				continue
+
 			answer = answers.get(call.id)
 			tool = self._tools_by_name.get(call.name)
 			if tool is not None and tool.requires_confirmation:
-				content = self._resolve_confirmation(call, answer)
+				result = self._resolve_confirmation(call, answer)
+				denied = _permission_denied_from_result(result)
+				content = _serialize_tool_result(denied or result)
+				permission_denied = denied is not None
 			else:
 				content = _serialize_tool_result(answer)
 			messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content})
 			resolved.append((call, content))
-		return messages, resolved
+		return messages, resolved, permission_denied
 
-	def _resolve_confirmation(self, call: ToolCall, answer: Any) -> str:
+	def _resolve_confirmation(self, call: ToolCall, answer: Any) -> Any:
 		"""Run the tool if approved; deny if rejected; redirect with user feedback otherwise."""
 		if answer == "Approve":
 			result = self._run_tool(call)
@@ -248,22 +305,53 @@ class Agent:
 				)
 
 			questions: list[Question] = []
-			for call in response.tool_calls:
+			resolved: list[tuple[ToolCall, str | None]] = []
+			permission_denied = False
+			for index, call in enumerate(response.tool_calls):
 				result = self._invoke(call)
 				if isinstance(result, Question):
 					result.key = call.id
 					questions.append(result)
+					resolved.append((call, None))
 					continue
 
 				executed_calls.append(call)
-				messages.append(
-					{
-						"role": "tool",
-						"tool_call_id": call.id,
-						"name": call.name,
-						"content": _serialize_tool_result(result),
-					}
+				denied = _permission_denied_from_result(result)
+				resolved.append((call, _serialize_tool_result(denied or result)))
+				if denied is not None:
+					permission_denied = True
+					resolved.extend(
+						(call, _permission_skipped_result()) for call in response.tool_calls[index + 1 :]
+					)
+					break
+
+			if permission_denied:
+				for call, content in resolved:
+					messages.append(
+						{
+							"role": "tool",
+							"tool_call_id": call.id,
+							"name": call.name,
+							"content": content or _permission_skipped_result(),
+						}
+					)
+				return self._permission_denied_result(
+					messages,
+					iterations=iteration,
+					usage=usage_total,
+					executed_calls=executed_calls,
 				)
+
+			for call, content in resolved:
+				if content is not None:
+					messages.append(
+						{
+							"role": "tool",
+							"tool_call_id": call.id,
+							"name": call.name,
+							"content": content,
+						}
+					)
 
 			if questions:
 				return RunResult(
@@ -314,7 +402,10 @@ class Agent:
 				return
 
 			questions: list[Question] = []
-			for call in response.tool_calls:
+			resolved: list[tuple[ToolCall, str | None]] = []
+			ended_ids: set[str] = set()
+			permission_denied = False
+			for index, call in enumerate(response.tool_calls):
 				# Re-announce with the full arguments now that they've finished streaming, before the
 				# tool runs — so the UI shows the arguments during execution, not only with the result.
 				yield ToolStarted(id=call.id, name=call.name, arguments=call.arguments)
@@ -322,17 +413,50 @@ class Agent:
 				if isinstance(result, Question):
 					result.key = call.id
 					questions.append(result)
-					yield ToolEnded(id=call.id, name=call.name, result="")
+					resolved.append((call, None))
 					continue
 
 				executed_calls.append(call)
-				serialized = _serialize_tool_result(result)
-				messages.append(
-					{"role": "tool", "tool_call_id": call.id, "name": call.name, "content": serialized}
-				)
+				denied = _permission_denied_from_result(result)
+				serialized = _serialize_tool_result(denied or result)
+				resolved.append((call, serialized))
 				yield ToolEnded(id=call.id, name=call.name, result=serialized)
+				ended_ids.add(call.id)
+				if denied is not None:
+					permission_denied = True
+					resolved.extend(
+						(call, _permission_skipped_result()) for call in response.tool_calls[index + 1 :]
+					)
+					break
+
+			if permission_denied:
+				for call, content in resolved:
+					serialized = content or _permission_skipped_result()
+					messages.append(
+						{"role": "tool", "tool_call_id": call.id, "name": call.name, "content": serialized}
+					)
+					if call.id not in ended_ids:
+						yield ToolEnded(id=call.id, name=call.name, result=serialized)
+				yield Done(
+					result=self._permission_denied_result(
+						messages,
+						iterations=iteration,
+						usage=usage_total,
+						executed_calls=executed_calls,
+					)
+				)
+				return
+
+			for call, content in resolved:
+				if content is not None:
+					messages.append(
+						{"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
+					)
 
 			if questions:
+				for call, content in resolved:
+					if content is None:
+						yield ToolEnded(id=call.id, name=call.name, result="")
 				yield Done(
 					result=RunResult(
 						output=response.content,
@@ -358,6 +482,11 @@ class Agent:
 
 	def _transcript_calls(self, messages: list[dict[str, Any]], *, answered: bool) -> list[ToolCall]:
 		has_result = {m.get("tool_call_id") for m in messages if m.get("role") == "tool"}
+		skipped = {
+			m.get("tool_call_id")
+			for m in messages
+			if m.get("role") == "tool" and _tool_result_status(m.get("content")) == "skipped"
+		}
 		calls: list[ToolCall] = []
 		for message in messages:
 			if message.get("role") != "assistant":
@@ -365,22 +494,35 @@ class Agent:
 			for tc in message.get("tool_calls") or []:
 				if (tc["id"] in has_result) != answered:
 					continue
+				if answered and tc["id"] in skipped:
+					continue
 				fn = tc["function"]
 				arguments = fn.get("arguments") or "{}"
 				calls.append(ToolCall(id=tc["id"], name=fn["name"], arguments=json.loads(arguments)))
 		return calls
 
 	def _build_initial_messages(self, input: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
-		"""For a string, build [system?, user]. For a list, trust the caller and use it as-is —
-		the caller owns the system message and any history."""
+		"""Build a transcript and enforce the platform permission boundary.
+
+		List input may be an older persisted session, so its system message is upgraded in
+		memory before the next model call.
+		"""
 		if isinstance(input, str):
-			messages: list[dict[str, Any]] = []
-			if self.instructions:
-				messages.append({"role": "system", "content": self.instructions})
+			messages: list[dict[str, Any]] = [{"role": "system", "content": self.instructions}]
 			messages.append({"role": "user", "content": input})
 			return messages
 		_validate_messages(input)
-		return list(input)
+		messages = [dict(message) for message in input]
+		for index, message in enumerate(messages):
+			if message.get("role") != "system":
+				continue
+			content = message.get("content")
+			if isinstance(content, str):
+				messages[index]["content"] = with_permission_policy(content)
+				return messages
+			break
+		messages.insert(0, {"role": "system", "content": PERMISSION_POLICY})
+		return messages
 
 	def _invoke(self, call: ToolCall) -> Any:
 		"""Run a tool and return its raw result. A Question (returned or synthesized for
@@ -399,6 +541,8 @@ class Agent:
 		tool = self._tools_by_name[call.name]
 		try:
 			return tool(**call.arguments)
+		except (PermissionError, frappe.PermissionError) as e:
+			return ToolPermissionDenied((str(e).strip() or e.__class__.__name__)[:ERROR_MESSAGE_LIMIT])
 		except Exception as e:
 			return json.dumps({"error": str(e)[:ERROR_MESSAGE_LIMIT]})
 
@@ -455,7 +599,60 @@ def _has_denial(answers: dict[str, Any]) -> bool:
 	return any(answer == "Deny" for answer in answers.values())
 
 
+def with_permission_policy(instructions: str | None) -> str:
+	"""Prepend the immutable runtime permission rule once."""
+	if instructions and PERMISSION_POLICY_MARKER in instructions:
+		return instructions
+	if instructions:
+		return f"{PERMISSION_POLICY}\n\n{instructions}"
+	return PERMISSION_POLICY
+
+
+def _permission_denied_from_result(result: Any) -> ToolPermissionDenied | None:
+	"""Recognize raised permission errors and explicit structured tool denials.
+
+	Free-form error text is deliberately not classified: ordinary errors must remain
+	recoverable, and permission-sensitive tools should raise a permission exception or
+	return the documented status.
+	"""
+	if isinstance(result, ToolPermissionDenied):
+		return result
+
+	payload = result
+	if isinstance(result, str):
+		try:
+			payload = json.loads(result)
+		except (TypeError, ValueError):
+			return None
+	if not isinstance(payload, dict) or payload.get("status") != "permission_denied":
+		return None
+	message = str(payload.get("message") or "Permission denied")[:ERROR_MESSAGE_LIMIT]
+	return ToolPermissionDenied(message)
+
+
+def _permission_skipped_result() -> str:
+	return json.dumps(
+		{
+			"status": "skipped",
+			"reason": "permission_denied",
+			"message": "Skipped because an earlier tool call was denied.",
+		}
+	)
+
+
+def _tool_result_status(content: Any) -> str | None:
+	if not isinstance(content, str):
+		return None
+	try:
+		payload = json.loads(content)
+	except (TypeError, ValueError):
+		return None
+	return payload.get("status") if isinstance(payload, dict) else None
+
+
 def _serialize_tool_result(result: Any) -> str:
+	if isinstance(result, ToolPermissionDenied):
+		return json.dumps({"status": "permission_denied", "message": result.message})
 	if isinstance(result, str):
 		return result
 	if result is None:

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from flow.lib.agent import Agent
+from flow.lib.agent import PERMISSION_POLICY_MARKER, Agent
 from flow.lib.model import ChatResponse, Model
 from flow.permissions import FLOW_USER_ROLE, ensure_flow_role
 from flow.tools.builtins import sync_builtin_tools
@@ -88,7 +88,8 @@ class TestFlowAgentAssemble(IntegrationTestCase):
 
 		self.assertIsInstance(runtime, Agent)
 		self.assertEqual(runtime.name, self.agent_doc.name)
-		self.assertEqual(runtime.instructions, "Be terse.")
+		self.assertTrue(runtime.instructions.endswith("Be terse."))
+		self.assertEqual(runtime.instructions.count(PERMISSION_POLICY_MARKER), 1)
 		self.assertEqual(sorted(t.name for t in runtime.tools), ["describe", "execute", "read"])
 		self.assertEqual(runtime.max_iterations, 5)
 
@@ -218,6 +219,8 @@ class TestFlowAgentRun(IntegrationTestCase):
 		snapshot = json.loads(ai_run.config_snapshot)
 		self.assertEqual(snapshot["title"], "Test Agent")
 		self.assertEqual(snapshot["model"], self.model_doc.name)
+		self.assertTrue(snapshot["instructions"].endswith("Be terse."))
+		self.assertEqual(snapshot["instructions"].count(PERMISSION_POLICY_MARKER), 1)
 		self.assertEqual(sorted(snapshot["tools"]), ["describe", "execute", "read"])
 		self.assertEqual(snapshot["max_iterations"], 5)
 

@@ -7,6 +7,8 @@ from typing import Any
 from frappe.tests import UnitTestCase
 
 from flow.lib.agent import (
+	PERMISSION_DENIED_OUTPUT,
+	PERMISSION_POLICY_MARKER,
 	Agent,
 	Done,
 	Question,
@@ -73,7 +75,9 @@ class TestAgentBasics(UnitTestCase):
 		self.assertEqual(result.output, "hello")
 		self.assertEqual(result.iterations, 1)
 		self.assertEqual(result.tool_calls, [])
-		self.assertEqual(result.messages[0], {"role": "user", "content": "hi"})
+		self.assertEqual(result.messages[0]["role"], "system")
+		self.assertIn(PERMISSION_POLICY_MARKER, result.messages[0]["content"])
+		self.assertEqual(result.messages[1], {"role": "user", "content": "hi"})
 		self.assertEqual(result.messages[-1]["role"], "assistant")
 
 	def test_instructions_added_as_system_message(self):
@@ -83,7 +87,9 @@ class TestAgentBasics(UnitTestCase):
 		agent.run("hi")
 
 		first_message = model.calls[0]["messages"][0]
-		self.assertEqual(first_message, {"role": "system", "content": "You are concise."})
+		self.assertEqual(first_message["role"], "system")
+		self.assertTrue(first_message["content"].endswith("You are concise."))
+		self.assertEqual(first_message["content"].count(PERMISSION_POLICY_MARKER), 1)
 
 	def test_run_accepts_message_list_input(self):
 		model = FakeModel([_final("ok")])
@@ -92,7 +98,23 @@ class TestAgentBasics(UnitTestCase):
 		agent.run([{"role": "user", "content": "one"}, {"role": "user", "content": "two"}])
 
 		messages = model.calls[0]["messages"]
-		self.assertEqual([m["content"] for m in messages], ["one", "two"])
+		self.assertIn(PERMISSION_POLICY_MARKER, messages[0]["content"])
+		self.assertEqual([m["content"] for m in messages if m["role"] == "user"], ["one", "two"])
+
+	def test_old_system_message_is_upgraded_without_duplicate_policy(self):
+		model = FakeModel([_final("ok")])
+		agent = Agent(model=model)
+
+		agent.run(
+			[
+				{"role": "system", "content": "Historical instructions."},
+				{"role": "user", "content": "continue"},
+			]
+		)
+
+		system = model.calls[0]["messages"][0]["content"]
+		self.assertTrue(system.endswith("Historical instructions."))
+		self.assertEqual(system.count(PERMISSION_POLICY_MARKER), 1)
 
 	def test_usage_is_accumulated_across_iterations(self):
 		@tool
@@ -243,6 +265,94 @@ class TestAgentToolLoop(UnitTestCase):
 		tool_messages = [m for m in result.messages if m["role"] == "tool"]
 		self.assertEqual([m["tool_call_id"] for m in tool_messages], ["c1", "c2"])
 		self.assertEqual(len(result.tool_calls), 2)
+
+
+class TestAgentPermissionBoundary(UnitTestCase):
+	def _restricted_tool(self, *, frappe_error: bool = False):
+		@tool
+		def restricted() -> str:
+			"""Access restricted ERP data."""
+			if frappe_error:
+				import frappe
+
+				raise frappe.PermissionError("Not permitted to read Salary Slip")
+			raise PermissionError("Not permitted to read Salary Slip")
+
+		return restricted
+
+	def test_builtin_permission_error_stops_without_another_model_call(self):
+		model = FakeModel([_tool_call("restricted", {})])
+		agent = Agent(model=model, tools=[self._restricted_tool()])
+
+		result = agent.run("show salaries")
+
+		self.assertEqual(result.output, PERMISSION_DENIED_OUTPUT)
+		self.assertEqual(result.iterations, 1)
+		self.assertEqual(len(model.calls), 1)
+		payload = json.loads(next(m for m in result.messages if m["role"] == "tool")["content"])
+		self.assertEqual(payload["status"], "permission_denied")
+		self.assertIn("Salary Slip", payload["message"])
+		self.assertEqual(result.messages[-1], {"role": "assistant", "content": PERMISSION_DENIED_OUTPUT})
+
+	def test_frappe_permission_error_is_terminal(self):
+		model = FakeModel([_tool_call("restricted", {})])
+		agent = Agent(model=model, tools=[self._restricted_tool(frappe_error=True)])
+
+		result = agent.run("show salaries")
+
+		self.assertEqual(result.output, PERMISSION_DENIED_OUTPUT)
+		self.assertEqual(len(model.calls), 1)
+
+	def test_explicit_permission_denied_result_is_terminal(self):
+		@tool
+		def remote_read() -> dict:
+			"""Call a permission-aware remote service."""
+			return {"status": "permission_denied", "message": "Remote policy rejected the request"}
+
+		model = FakeModel([_tool_call("remote_read", {})])
+		result = Agent(model=model, tools=[remote_read]).run("read remote data")
+
+		self.assertEqual(result.output, PERMISSION_DENIED_OUTPUT)
+		self.assertEqual(len(model.calls), 1)
+
+	def test_calls_after_permission_denial_are_skipped(self):
+		later_calls: list[str] = []
+
+		@tool
+		def later() -> str:
+			"""Must not run."""
+			later_calls.append("ran")
+			return "unexpected"
+
+		response = ChatResponse(
+			content=None,
+			tool_calls=[
+				ToolCall(id="c1", name="restricted", arguments={}),
+				ToolCall(id="c2", name="later", arguments={}),
+			],
+		)
+		model = FakeModel([response])
+		agent = Agent(model=model, tools=[self._restricted_tool(), later])
+
+		result = agent.run("do both")
+
+		self.assertEqual(later_calls, [])
+		self.assertEqual([call.name for call in result.tool_calls], ["restricted"])
+		tool_messages = [m for m in result.messages if m["role"] == "tool"]
+		self.assertEqual([m["tool_call_id"] for m in tool_messages], ["c1", "c2"])
+		self.assertEqual(json.loads(tool_messages[1]["content"])["status"], "skipped")
+
+	def test_streaming_permission_denial_ends_without_model_retry(self):
+		model = FakeModel([_tool_call("restricted", {})], streams=[[""]])
+		agent = Agent(model=model, tools=[self._restricted_tool()])
+
+		events = list(agent.run("show salaries", stream=True))
+
+		self.assertEqual(len(model.calls), 1)
+		ended = next(event for event in events if isinstance(event, ToolEnded))
+		self.assertEqual(json.loads(ended.result)["status"], "permission_denied")
+		self.assertIsInstance(events[-1], Done)
+		self.assertEqual(events[-1].result.output, PERMISSION_DENIED_OUTPUT)
 
 
 class TestAgentInputValidation(UnitTestCase):
@@ -641,6 +751,40 @@ class TestAgentConfirmation(UnitTestCase):
 		tool_message = next(m for m in resumed.messages if m["role"] == "tool")
 		self.assertEqual(tool_message["content"], "wrote 2 bytes to /tmp/x")
 		self.assertEqual(resumed.output, "done")
+
+	def test_approved_tool_permission_denial_stops_without_calling_model(self):
+		@tool(requires_confirmation=True)
+		def restricted_write() -> str:
+			"""Write a protected record."""
+			raise PermissionError("No permission to update Salary Slip")
+
+		model = FakeModel([_tool_call("restricted_write", {}, call_id="c1")])
+		agent = Agent(model=model, tools=[restricted_write])
+
+		paused = agent.run("update salaries")
+		resumed = agent.resume(paused.messages, {"c1": "Approve"})
+
+		self.assertEqual(len(model.calls), 1)
+		self.assertEqual(resumed.output, PERMISSION_DENIED_OUTPUT)
+		tool_message = next(m for m in resumed.messages if m["role"] == "tool")
+		self.assertEqual(json.loads(tool_message["content"])["status"], "permission_denied")
+
+	def test_stream_approved_tool_permission_denial_is_terminal(self):
+		@tool(requires_confirmation=True)
+		def restricted_write() -> str:
+			"""Write a protected record."""
+			raise PermissionError("No permission to update Salary Slip")
+
+		model = FakeModel([_tool_call("restricted_write", {}, call_id="c1")])
+		agent = Agent(model=model, tools=[restricted_write])
+		paused = agent.run("update salaries")
+
+		events = list(agent.resume(paused.messages, {"c1": "Approve"}, stream=True))
+
+		self.assertEqual(len(model.calls), 1)
+		self.assertEqual(json.loads(events[0].result)["status"], "permission_denied")
+		self.assertIsInstance(events[-1], Done)
+		self.assertEqual(events[-1].result.output, PERMISSION_DENIED_OUTPUT)
 
 	def test_deny_records_rejection_and_stops_without_calling_model(self):
 		write_file, calls = self._danger_tool()

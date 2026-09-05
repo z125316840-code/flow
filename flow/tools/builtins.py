@@ -93,6 +93,8 @@ def read(
 	`filters` is a dict like {"status": "Open"} or {"qty": [">", 5]}. `fields` defaults
 	to the record name. Returns a list of matching records (capped at 200).
 	"""
+	if not frappe.has_permission(doctype, "read"):
+		raise PermissionError(f"No permission to read {doctype}")
 	limit = min(max(int(limit), 1), MAX_READ_LIMIT)
 	return frappe.get_list(
 		doctype,
@@ -353,6 +355,8 @@ def create(doctype: str, records: list[dict[str, Any]]) -> dict[str, Any]:
 			doc.update(values or {})
 			doc.insert()
 			created.append(doc.name)
+		except (PermissionError, frappe.PermissionError):
+			raise
 		except Exception as e:
 			failures.append({"row": row, "error": _error_text(e)})
 
@@ -375,16 +379,20 @@ def create(doctype: str, records: list[dict[str, Any]]) -> dict[str, Any]:
 )
 def update(doctype: str, names: list[str], values: dict[str, Any]) -> dict[str, Any]:
 	"""Apply the same field values to one or more existing records. Runs full validation per record."""
+	for name in names:
+		if not frappe.has_permission(doctype, "write", name):
+			raise frappe.PermissionError(_("No permission to update {0} {1}.").format(doctype, name))
+
 	updated: list[str] = []
 	failures: list[dict[str, Any]] = []
 	for name in names:
 		try:
-			if not frappe.has_permission(doctype, "write", name):
-				raise frappe.PermissionError(_("No permission to update {0} {1}.").format(doctype, name))
 			doc = frappe.get_doc(doctype, name)
 			doc.update(values or {})
 			doc.save()
 			updated.append(doc.name)
+		except (PermissionError, frappe.PermissionError):
+			raise
 		except Exception as e:
 			failures.append({"name": name, "error": _error_text(e)})
 
@@ -406,14 +414,18 @@ def update(doctype: str, names: list[str], values: dict[str, Any]) -> dict[str, 
 )
 def delete(doctype: str, names: list[str]) -> dict[str, Any]:
 	"""Delete one or more records. Fails per record if another record links to it."""
+	for name in names:
+		if not frappe.has_permission(doctype, "delete", name):
+			raise frappe.PermissionError(_("No permission to delete {0} {1}.").format(doctype, name))
+
 	deleted: list[str] = []
 	failures: list[dict[str, Any]] = []
 	for name in names:
 		try:
-			if not frappe.has_permission(doctype, "delete", name):
-				raise frappe.PermissionError(_("No permission to delete {0} {1}.").format(doctype, name))
 			frappe.delete_doc(doctype, name, ignore_missing=False)
 			deleted.append(name)
+		except (PermissionError, frappe.PermissionError):
+			raise
 		except Exception as e:
 			failures.append({"name": name, "error": _error_text(e)})
 
@@ -456,6 +468,8 @@ def run_action(
 	for name in names:
 		try:
 			results.append({"name": name, "result": _apply_action(doctype, name, action, args)})
+		except (PermissionError, frappe.PermissionError):
+			raise
 		except Exception as e:
 			failures.append({"name": name, "error": _error_text(e)})
 

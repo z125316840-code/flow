@@ -159,10 +159,12 @@ class FlowAgent(Document):
 		)
 
 	def _snapshot(self, *, model: str | None = None) -> dict[str, Any]:
+		from flow.lib.agent import with_permission_policy
+
 		return {
 			"title": self.title,
 			"model": model or self.model,
-			"instructions": self.instructions,
+			"instructions": with_permission_policy(self.instructions),
 			"tools": [row.tool for row in self.tools],
 			"max_iterations": self.max_iterations or DEFAULT_MAX_ITERATIONS,
 		}

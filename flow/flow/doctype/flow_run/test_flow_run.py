@@ -144,6 +144,28 @@ class TestFlowRunPersistence(IntegrationTestCase):
 		# All rows tagged with the producing run.
 		self.assertTrue(all(row.run == doc.name for row in session_doc.messages))
 
+	def test_ephemeral_system_policy_does_not_duplicate_historical_messages(self):
+		session = _new_session(self.agent)
+		session_doc = frappe.get_doc("Flow Session", session)
+		session_doc.append("messages", {"role": "user", "content": "historical user message"})
+		session_doc.save(ignore_permissions=True)
+		result = RunResult(
+			output="new answer",
+			messages=[
+				{"role": "system", "content": "runtime-only policy"},
+				{"role": "user", "content": "historical user message"},
+				{"role": "assistant", "content": "new answer"},
+			],
+			iterations=1,
+		)
+
+		doc = create_run(source="Manual", input="historical user message", session=session)
+		doc.apply_result(result)
+
+		stored = frappe.get_doc("Flow Session", session).messages
+		self.assertEqual([row.role for row in stored], ["user", "assistant"])
+		self.assertEqual([row.content for row in stored], ["historical user message", "new answer"])
+
 	def test_persist_paused_run_stores_questions(self):
 		session = _new_session(self.agent)
 		doc = persist_result(_paused_result(), source="Manual", input="email the list", session=session)

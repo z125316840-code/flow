@@ -226,7 +226,22 @@ def _status_from_result(result: RunResult) -> str:
 def _new_messages_for_session(session: str, full_transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
 	"""Return new messages produced by this run, excluding the session's prior history."""
 	existing = frappe.db.count("Flow Session Message", {"parent": session})
-	return list(full_transcript[existing:])
+	# A historical session may predate the mandatory runtime system policy. Agent adds that
+	# policy ephemerally before the model call; do not let the extra prefix shift this slice
+	# and duplicate an old conversation row during persistence.
+	first_stored_role = frappe.db.get_value(
+		"Flow Session Message",
+		{"parent": session},
+		"role",
+		order_by="idx asc",
+	)
+	has_ephemeral_system_prefix = (
+		bool(full_transcript)
+		and full_transcript[0].get("role") == "system"
+		and first_stored_role not in (None, "system")
+	)
+	offset = 1 if has_ephemeral_system_prefix else 0
+	return list(full_transcript[existing + offset :])
 
 
 def _dump_json(value: Any) -> str | None:
