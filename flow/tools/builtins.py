@@ -38,6 +38,8 @@ def find_doctypes(search: str | None = None, module: str | None = None, limit: i
 
 	Search by keyword (substring of the name) and/or filter by module. Returns a list
 	of {name, module} you can read. Child tables are excluded; single DocTypes are included.
+	If the search matches DocTypes but none are readable, raise a permission denial instead
+	of making installed modules look absent and encouraging the agent to try other routes.
 	"""
 	limit = min(max(int(limit), 1), MAX_READ_LIMIT)
 	filters: dict[str, Any] = {"istable": 0}
@@ -46,7 +48,10 @@ def find_doctypes(search: str | None = None, module: str | None = None, limit: i
 	if search:
 		filters["name"] = ["like", f"%{search}%"]
 	rows = frappe.get_all("DocType", filters=filters, fields=["name", "module"], order_by="name", limit=limit)
-	return [r for r in rows if frappe.has_permission(r["name"], "read")]
+	readable = [r for r in rows if frappe.has_permission(r["name"], "read")]
+	if rows and not readable:
+		raise PermissionError("No permission to read matching DocTypes")
+	return readable
 
 
 @tool

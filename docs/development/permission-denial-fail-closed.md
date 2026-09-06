@@ -27,6 +27,9 @@ paste into an individual prompt.
    resumed after a pause.
 7. Built-in batch write/action tools must re-raise permission exceptions instead of
    hiding them inside ordinary per-record failure lists.
+8. DocType discovery must distinguish "nothing matched" from "matches exist but none are
+   readable". The latter is a permission denial, not an empty search result that the model
+   may work around by broadening its query.
 
 Ordinary validation, missing-record, integration, and business-rule failures remain tool
 errors that the model may explain or recover from. A user choosing **Deny** at a confirmation
@@ -73,6 +76,7 @@ The critical assertions are:
 
 - a generic tool exception still returns to the model for possible recovery;
 - a built-in or Frappe permission exception stops after one model turn;
+- permission-filtered DocType discovery stops instead of making an installed module look absent;
 - later calls in the same response never execute after permission denial;
 - streaming emits terminal tool events and `Done` without another model request;
 - approval-resume stops if the approved tool raises a permission exception;

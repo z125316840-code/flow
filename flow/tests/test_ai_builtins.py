@@ -39,10 +39,13 @@ class TestFindDoctypes(IntegrationTestCase):
 	def test_respects_read_permission(self):
 		frappe.set_user("Guest")
 		try:
-			names = {r["name"] for r in find_doctypes(search="User", limit=200)}
-			self.assertNotIn("User", names)
+			with self.assertRaises(PermissionError):
+				find_doctypes(search="User", limit=200)
 		finally:
 			frappe.set_user("Administrator")
+
+	def test_no_matches_is_not_a_permission_denial(self):
+		self.assertEqual(find_doctypes(search="No Such Flow DocType 7f3d8c"), [])
 
 
 class TestDescribe(IntegrationTestCase):
