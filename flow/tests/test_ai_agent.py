@@ -137,6 +137,22 @@ class TestAgentBasics(UnitTestCase):
 		result = agent.run("hi")
 
 		self.assertEqual(result.usage, {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11})
+		self.assertTrue(result.usage_reported)
+
+	def test_usage_coverage_preserves_explicit_provider_signal(self):
+		model = FakeModel(
+			[
+				ChatResponse(
+					content="done",
+					usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+					usage_reported=False,
+				)
+			]
+		)
+
+		result = Agent(model=model).run("hi")
+
+		self.assertFalse(result.usage_reported)
 
 
 class TestAgentToolLoop(UnitTestCase):
@@ -646,6 +662,7 @@ class TestAgentStreaming(UnitTestCase):
 
 		done = events[-1]
 		self.assertEqual(done.result.usage, {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11})
+		self.assertTrue(done.result.usage_reported)
 
 	def test_run_stream_resume_continues_with_answer(self):
 		@tool

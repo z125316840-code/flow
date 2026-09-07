@@ -103,6 +103,38 @@ class TestModel(UnitTestCase):
 		self.assertEqual(resp.tool_calls, [])
 		self.assertEqual(resp.finish_reason, "stop")
 		self.assertEqual(resp.usage["total_tokens"], 8)
+		self.assertTrue(resp.usage_reported)
+
+	@patch("litellm.completion")
+	def test_chat_distinguishes_missing_usage_from_zero_usage(self, mock_completion):
+		message = SimpleNamespace(content="hi there", tool_calls=[])
+		choice = SimpleNamespace(message=message, finish_reason="stop")
+		mock_completion.return_value = SimpleNamespace(choices=[choice], usage=None)
+
+		resp = Model(model_id="openai/gpt-4.1", api_key="sk-test").chat("hi")
+
+		self.assertEqual(resp.usage, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+		self.assertFalse(resp.usage_reported)
+
+	@patch("litellm.completion")
+	def test_chat_normalizes_input_output_token_aliases(self, mock_completion):
+		message = SimpleNamespace(content="hi there", tool_calls=[])
+		choice = SimpleNamespace(message=message, finish_reason="stop")
+		mock_completion.return_value = SimpleNamespace(
+			choices=[choice],
+			usage=SimpleNamespace(
+				prompt_tokens=0,
+				completion_tokens=0,
+				total_tokens=0,
+				input_tokens=9,
+				output_tokens=4,
+			),
+		)
+
+		resp = Model(model_id="openai/gpt-4.1", api_key="sk-test").chat("hi")
+
+		self.assertEqual(resp.usage, {"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13})
+		self.assertTrue(resp.usage_reported)
 
 	@patch("litellm.completion")
 	def test_chat_parses_tool_calls(self, mock_completion):
@@ -161,6 +193,7 @@ class TestModel(UnitTestCase):
 		self.assertEqual(response.content, "hello world")
 		self.assertEqual(response.finish_reason, "stop")
 		self.assertEqual(response.usage["total_tokens"], 7)
+		self.assertTrue(response.usage_reported)
 		self.assertEqual(response.tool_calls, [])
 
 	@patch("litellm.completion")
@@ -194,11 +227,12 @@ class TestModel(UnitTestCase):
 		mock_completion.return_value = iter([_stream_chunk(content="hi", finish_reason="stop")])
 
 		m = Model(model_id="openai/gpt-4.1", api_key="sk-test")
-		_drain(m.chat([{"role": "user", "content": "hi"}], stream=True))
+		_yielded, response = _drain(m.chat([{"role": "user", "content": "hi"}], stream=True))
 
 		kwargs = mock_completion.call_args.kwargs
 		self.assertTrue(kwargs["stream"])
 		self.assertEqual(kwargs["stream_options"], {"include_usage": True})
+		self.assertFalse(response.usage_reported)
 
 	@patch("litellm.completion")
 	def test_chat_stream_returns_error_for_invalid_tool_arguments(self, mock_completion):

@@ -6,7 +6,7 @@ import json
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from flow.flow.doctype.flow_run.flow_run import create_run, persist_result
+from flow.flow.doctype.flow_run.flow_run import create_run, normalize_token_usage, persist_result
 from flow.lib.agent import Question, RunResult
 from flow.lib.model import ToolCall
 
@@ -121,6 +121,16 @@ class TestFlowRunPersistence(IntegrationTestCase):
 		self.assertEqual(session_doc.messages[1].role, "assistant")
 		self.assertEqual(session_doc.messages[1].run, doc.name)
 
+	def test_token_normalization_rejects_negative_invalid_and_inconsistent_counts(self):
+		self.assertEqual(
+			normalize_token_usage('{"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 1}'),
+			{"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+		)
+		self.assertEqual(
+			normalize_token_usage({"prompt_tokens": -5, "completion_tokens": "bad", "total_tokens": None}),
+			{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+		)
+
 	def test_persist_serializes_tool_calls_as_dicts(self):
 		session = _new_session(self.agent)
 		doc = persist_result(_tooled_result(), source="Manual", input="email customers", session=session)
@@ -202,6 +212,10 @@ class TestFlowRunPersistence(IntegrationTestCase):
 		self.assertEqual(
 			json.loads(doc.usage), {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11}
 		)
+		self.assertEqual(doc.prompt_tokens, 7)
+		self.assertEqual(doc.completion_tokens, 4)
+		self.assertEqual(doc.total_tokens, 11)
+		self.assertTrue(doc.token_usage_reported)
 
 	def test_persist_records_usage(self):
 		session = _new_session(self.agent)
@@ -210,6 +224,32 @@ class TestFlowRunPersistence(IntegrationTestCase):
 		self.assertEqual(
 			json.loads(doc.usage), {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
 		)
+		self.assertEqual(doc.prompt_tokens, 10)
+		self.assertEqual(doc.completion_tokens, 4)
+		self.assertEqual(doc.total_tokens, 14)
+		self.assertTrue(doc.token_usage_reported)
+
+	def test_persist_records_missing_usage_without_claiming_coverage(self):
+		session = _new_session(self.agent)
+		result = _completed_result()
+		result.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+		result.usage_reported = False
+
+		doc = persist_result(result, source="Manual", input="x", session=session)
+
+		self.assertEqual(doc.total_tokens, 0)
+		self.assertFalse(doc.token_usage_reported)
+
+	def test_explicit_zero_usage_is_distinct_from_missing_usage_for_legacy_callers(self):
+		session = _new_session(self.agent)
+		result = _completed_result()
+		result.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+		result.usage_reported = None
+
+		doc = persist_result(result, source="Manual", input="x", session=session)
+
+		self.assertEqual(doc.total_tokens, 0)
+		self.assertTrue(doc.token_usage_reported)
 
 	def test_create_run_with_config_snapshot(self):
 		session = _new_session(self.agent)

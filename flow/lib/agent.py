@@ -58,6 +58,7 @@ class RunResult:
 	tool_calls: list[ToolCall] = field(default_factory=list)
 	iterations: int = 0
 	usage: dict[str, int] = field(default_factory=dict)
+	usage_reported: bool | None = None
 	paused: bool = False
 	questions: list[Question] = field(default_factory=list)
 
@@ -201,6 +202,7 @@ class Agent:
 		*,
 		iterations: int,
 		usage: dict[str, int] | None = None,
+		usage_reported: bool | None = None,
 		executed_calls: list[ToolCall] | None = None,
 	) -> RunResult:
 		"""End immediately with deterministic copy; the model must not author a workaround."""
@@ -213,6 +215,7 @@ class Agent:
 			tool_calls=executed_calls if executed_calls is not None else self._answered_calls(messages),
 			iterations=iterations,
 			usage=usage or {},
+			usage_reported=usage_reported,
 		)
 
 	def new_session(self, *, title: str | None = None) -> Any:
@@ -289,10 +292,12 @@ class Agent:
 		tool_schemas = [t.to_dict() for t in self.tools] or None
 		executed_calls = executed_calls if executed_calls is not None else []
 		usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+		usage_reported = False
 
 		for iteration in range(1, self.max_iterations + 1):
 			response = self.model.chat(messages, tools=tool_schemas)
 			_accumulate_usage(usage_total, response.usage)
+			usage_reported = usage_reported or _usage_was_reported(response)
 			messages.append(_assistant_message(response))
 
 			if not response.tool_calls:
@@ -302,6 +307,7 @@ class Agent:
 					tool_calls=executed_calls,
 					iterations=iteration,
 					usage=usage_total,
+					usage_reported=usage_reported,
 				)
 
 			questions: list[Question] = []
@@ -339,6 +345,7 @@ class Agent:
 					messages,
 					iterations=iteration,
 					usage=usage_total,
+					usage_reported=usage_reported,
 					executed_calls=executed_calls,
 				)
 
@@ -360,6 +367,7 @@ class Agent:
 					tool_calls=executed_calls,
 					iterations=iteration,
 					usage=usage_total,
+					usage_reported=usage_reported,
 					paused=True,
 					questions=questions,
 				)
@@ -372,6 +380,7 @@ class Agent:
 		tool_schemas = [t.to_dict() for t in self.tools] or None
 		executed_calls = executed_calls if executed_calls is not None else []
 		usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+		usage_reported = False
 
 		for iteration in range(1, self.max_iterations + 1):
 			chunks = self.model.chat(messages, tools=tool_schemas, stream=True)
@@ -387,6 +396,7 @@ class Agent:
 			except StopIteration as e:
 				response = e.value
 			_accumulate_usage(usage_total, response.usage)
+			usage_reported = usage_reported or _usage_was_reported(response)
 			messages.append(_assistant_message(response))
 
 			if not response.tool_calls:
@@ -397,6 +407,7 @@ class Agent:
 						tool_calls=executed_calls,
 						iterations=iteration,
 						usage=usage_total,
+						usage_reported=usage_reported,
 					)
 				)
 				return
@@ -442,6 +453,7 @@ class Agent:
 						messages,
 						iterations=iteration,
 						usage=usage_total,
+						usage_reported=usage_reported,
 						executed_calls=executed_calls,
 					)
 				)
@@ -464,6 +476,7 @@ class Agent:
 						tool_calls=executed_calls,
 						iterations=iteration,
 						usage=usage_total,
+						usage_reported=usage_reported,
 						paused=True,
 						questions=questions,
 					)
@@ -666,3 +679,9 @@ def _serialize_tool_result(result: Any) -> str:
 def _accumulate_usage(total: dict[str, int], delta: dict[str, int]) -> None:
 	for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
 		total[key] += int(delta.get(key, 0) or 0)
+
+
+def _usage_was_reported(response: ChatResponse) -> bool:
+	if response.usage_reported is not None:
+		return response.usage_reported
+	return bool(response.usage)

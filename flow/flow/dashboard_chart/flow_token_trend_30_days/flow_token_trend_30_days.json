@@ -1,0 +1,35 @@
+{
+ "based_on": "creation",
+ "chart_name": "Flow Token Trend 30 Days",
+ "chart_type": "Custom",
+ "color": "#743ee2",
+ "creation": "2026-09-07 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Dashboard Chart",
+ "document_type": "Flow Run",
+ "dynamic_filters_json": "",
+ "filters_json": "[[\"Flow Run\",\"iterations\",\">\",0],[\"Flow Run\",\"token_usage_reported\",\"=\",1]]",
+ "idx": 0,
+ "is_public": 1,
+ "is_standard": 1,
+ "last_synced_on": null,
+ "modified": "2026-09-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Flow",
+ "name": "Flow Token Trend 30 Days",
+ "number_of_groups": 0,
+ "owner": "Administrator",
+ "roles": [
+  {
+   "role": "Flow User"
+  }
+ ],
+ "source": "Flow Run Metrics",
+ "time_interval": "Daily",
+ "timeseries": 1,
+ "timespan": "Last Month",
+ "type": "Line",
+ "use_report_chart": 0,
+ "value_based_on": "total_tokens",
+ "y_axis": []
+}

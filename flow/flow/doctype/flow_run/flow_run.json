@@ -20,6 +20,12 @@
   "detail_html",
   "tool_calls",
   "questions",
+  "section_break_token_usage",
+  "prompt_tokens",
+  "completion_tokens",
+  "column_break_token_usage",
+  "total_tokens",
+  "token_usage_reported",
   "usage",
   "config_snapshot",
   "section_break_error",
@@ -143,6 +149,54 @@
    "read_only": 1
   },
   {
+   "fieldname": "section_break_token_usage",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "Token Usage"
+  },
+  {
+   "default": "0",
+   "fieldname": "prompt_tokens",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Prompt Tokens",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "completion_tokens",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Completion Tokens",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_token_usage",
+   "fieldtype": "Column Break",
+   "hidden": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "total_tokens",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Total Tokens",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Whether at least one model response in this run supplied token usage.",
+   "fieldname": "token_usage_reported",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Token Usage Reported",
+   "read_only": 1
+  },
+  {
+   "description": "Raw cumulative token usage retained for compatibility and diagnostics.",
    "fieldname": "usage",
    "fieldtype": "JSON",
    "hidden": 1,

@@ -38,6 +38,10 @@ class ChatResponse:
 	tool_calls: list[ToolCall] = field(default_factory=list)
 	finish_reason: str | None = None
 	usage: dict[str, int] = field(default_factory=dict)
+	# None preserves compatibility for callers that construct ChatResponse directly: in that
+	# case the agent infers coverage from the presence of usage. Provider responses always set
+	# this explicitly so a missing usage object is not confused with a genuine zero-token result.
+	usage_reported: bool | None = None
 
 
 class Model:
@@ -142,6 +146,7 @@ def _consume_stream(chunks: Any) -> Generator[str | ToolCallBegin, None, ChatRes
 	tool_calls_acc: dict[int, dict[str, str]] = {}
 	announced: set[int] = set()
 	usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+	usage_reported = False
 	finish_reason: str | None = None
 
 	for chunk in chunks:
@@ -166,17 +171,15 @@ def _consume_stream(chunks: Any) -> Generator[str | ToolCallBegin, None, ChatRes
 
 		usage_obj = getattr(chunk, "usage", None)
 		if usage_obj is not None:
-			usage = {
-				"prompt_tokens": _attr(usage_obj, "prompt_tokens", 0) or 0,
-				"completion_tokens": _attr(usage_obj, "completion_tokens", 0) or 0,
-				"total_tokens": _attr(usage_obj, "total_tokens", 0) or 0,
-			}
+			usage, chunk_reported = _normalize_usage(usage_obj)
+			usage_reported = usage_reported or chunk_reported
 
 	return ChatResponse(
 		content="".join(content_parts) or None,
 		tool_calls=_finalize_tool_calls(tool_calls_acc),
 		finish_reason=finish_reason,
 		usage=usage,
+		usage_reported=usage_reported,
 	)
 
 
@@ -244,18 +247,49 @@ def _normalize(response: Any) -> ChatResponse:
 		tool_calls.append(_build_tool_call(_attr(raw_call, "id", ""), name, raw_args))
 
 	usage_obj = getattr(response, "usage", None)
-	usage = {
-		"prompt_tokens": _attr(usage_obj, "prompt_tokens", 0) or 0,
-		"completion_tokens": _attr(usage_obj, "completion_tokens", 0) or 0,
-		"total_tokens": _attr(usage_obj, "total_tokens", 0) or 0,
-	}
+	usage, usage_reported = _normalize_usage(usage_obj)
 
 	return ChatResponse(
 		content=getattr(message, "content", None),
 		tool_calls=tool_calls,
 		finish_reason=getattr(choice, "finish_reason", None),
 		usage=usage,
+		usage_reported=usage_reported,
 	)
+
+
+def _normalize_usage(usage_obj: Any) -> tuple[dict[str, int], bool]:
+	"""Normalize provider token usage without losing whether it was actually supplied."""
+	prompt_value = _attr(usage_obj, "prompt_tokens")
+	input_value = _attr(usage_obj, "input_tokens")
+	if input_value is not None and _token_count(input_value) > _token_count(prompt_value):
+		prompt_value = input_value
+	completion_value = _attr(usage_obj, "completion_tokens")
+	output_value = _attr(usage_obj, "output_tokens")
+	if output_value is not None and _token_count(output_value) > _token_count(completion_value):
+		completion_value = output_value
+	total_value = _attr(usage_obj, "total_tokens")
+	reported = usage_obj is not None and any(
+		value is not None for value in (prompt_value, completion_value, total_value)
+	)
+	prompt_tokens = _token_count(prompt_value)
+	completion_tokens = _token_count(completion_value)
+	total_tokens = max(
+		_token_count(total_value),
+		prompt_tokens + completion_tokens,
+	)
+	return {
+		"prompt_tokens": prompt_tokens,
+		"completion_tokens": completion_tokens,
+		"total_tokens": total_tokens,
+	}, reported
+
+
+def _token_count(value: Any) -> int:
+	try:
+		return max(0, int(value or 0))
+	except (TypeError, ValueError):
+		return 0
 
 
 def _attr(obj: Any, key: str, default: Any = None) -> Any:

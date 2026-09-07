@@ -43,18 +43,22 @@ class FlowRun(Document):
 		from frappe.types import DF
 
 		config_snapshot: DF.JSON | None
+		completion_tokens: DF.Int
 		error: DF.LongText | None
 		feedback_comment: DF.SmallText | None
 		feedback_rating: DF.Literal["", "Up", "Down"]
 		input: DF.LongText | None
 		iterations: DF.Int
 		output: DF.LongText | None
+		prompt_tokens: DF.Int
 		questions: DF.JSON | None
 		reference_doctype: DF.Link | None
 		reference_name: DF.DynamicLink | None
 		session: DF.Link
 		source: DF.Literal["Manual", "Trigger"]
 		status: DF.Literal["Running", "Paused", "Completed", "Failed"]
+		token_usage_reported: DF.Check
+		total_tokens: DF.Int
 		tool_calls: DF.JSON | None
 		trigger: DF.Link | None
 		usage: DF.JSON | None
@@ -99,7 +103,12 @@ class FlowRun(Document):
 			[{"id": c.id, "name": c.name, "arguments": c.arguments} for c in result.tool_calls]
 		)
 		self.questions = _dump_json([asdict(q) for q in result.questions]) if result.paused else None
-		self.usage = _dump_json(_merge_usage(self.usage, result.usage))
+		merged_usage = _merge_usage(self.usage, result.usage)
+		self.usage = _dump_json(merged_usage)
+		self.prompt_tokens = merged_usage["prompt_tokens"]
+		self.completion_tokens = merged_usage["completion_tokens"]
+		self.total_tokens = merged_usage["total_tokens"]
+		self.token_usage_reported = int(bool(self.token_usage_reported) or _result_usage_was_reported(result))
 		if self.status != "Failed":
 			self.error = None
 		self.save(ignore_permissions=True)
@@ -252,10 +261,45 @@ def _dump_json(value: Any) -> str | None:
 
 def _merge_usage(existing: str | None, new: dict[str, int]) -> dict[str, int]:
 	"""Add token counts from a (resumed) segment onto whatever the run already recorded."""
-	merged = json.loads(existing) if existing else {}
-	for key, value in new.items():
-		merged[key] = merged.get(key, 0) + value
-	return merged
+	previous = normalize_token_usage(existing)
+	current = normalize_token_usage(new)
+	return {
+		key: previous[key] + current[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+	}
+
+
+def normalize_token_usage(value: Any) -> dict[str, int]:
+	"""Return safe, internally consistent token counters from JSON or a mapping."""
+	if isinstance(value, str):
+		try:
+			value = json.loads(value)
+		except (TypeError, ValueError):
+			value = {}
+	if not isinstance(value, dict):
+		value = {}
+	prompt_tokens = _token_count(value.get("prompt_tokens"))
+	completion_tokens = _token_count(value.get("completion_tokens"))
+	total_tokens = max(_token_count(value.get("total_tokens")), prompt_tokens + completion_tokens)
+	return {
+		"prompt_tokens": prompt_tokens,
+		"completion_tokens": completion_tokens,
+		"total_tokens": total_tokens,
+	}
+
+
+def _result_usage_was_reported(result: RunResult) -> bool:
+	if result.usage_reported is not None:
+		return result.usage_reported
+	# Compatibility for direct RunResult callers: an explicitly supplied usage mapping,
+	# including genuine zero counts, means the caller did receive a usage payload.
+	return bool(result.usage)
+
+
+def _token_count(value: Any) -> int:
+	try:
+		return max(0, int(value or 0))
+	except (TypeError, ValueError):
+		return 0
 
 
 def _json_has_items(value: Any) -> bool:
