@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "title",
+  "card_icon",
   "enabled",
   "is_system_generated",
   "column_break_meta",
@@ -27,6 +28,13 @@
    "label": "Title",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "default": "bot",
+   "description": "Icon displayed for this agent in Card View.",
+   "fieldname": "card_icon",
+   "fieldtype": "Icon",
+   "label": "Card Icon"
   },
   {
    "default": "1",

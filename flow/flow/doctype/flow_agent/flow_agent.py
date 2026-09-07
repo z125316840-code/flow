@@ -35,6 +35,7 @@ class FlowAgent(Document):
 		)
 		from flow.flow.doctype.flow_agent_tool.flow_agent_tool import FlowAgentTool
 
+		card_icon: DF.Icon | None
 		enabled: DF.Check
 		instructions: DF.LongText
 		is_system_generated: DF.Check
